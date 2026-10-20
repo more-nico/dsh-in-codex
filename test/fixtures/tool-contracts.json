@@ -1,0 +1,497 @@
+{
+  "dsh_spawn": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 120
+      },
+      "task": {
+        "type": "string",
+        "minLength": 1
+      },
+      "context": {
+        "type": "string"
+      },
+      "cwd": {
+        "type": "string",
+        "minLength": 1
+      },
+      "model": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "thinking": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "provider",
+          "id"
+        ]
+      },
+      "profile": {
+        "type": "string",
+        "enum": [
+          "worker",
+          "reviewer",
+          "explorer"
+        ]
+      },
+      "path": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "pattern": "^[\\p{L}\\p{N}_-]+(?:\\/[\\p{L}\\p{N}_-]+)*$"
+      },
+      "group": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 120
+      },
+      "requestId": {
+        "description": "Stable retry key; reuse only for an identical operation",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      }
+    },
+    "required": [
+      "name",
+      "task"
+    ]
+  },
+  "dsh_list": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "pathPrefix": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "pattern": "^[\\p{L}\\p{N}_-]+(?:\\/[\\p{L}\\p{N}_-]+)*$"
+      },
+      "group": {
+        "type": "string",
+        "minLength": 1
+      },
+      "includeArchived": {
+        "default": false,
+        "type": "boolean"
+      }
+    }
+  },
+  "dsh_read": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "agentId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "description": "Agent UUID or unique task path in this chat"
+      },
+      "limit": {
+        "default": 5,
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200
+      },
+      "includeTools": {
+        "default": false,
+        "type": "boolean"
+      },
+      "includePartial": {
+        "default": true,
+        "type": "boolean"
+      },
+      "before": {
+        "type": "string"
+      },
+      "messageId": {
+        "description": "Read one exact message in bounded text pages",
+        "type": "string",
+        "minLength": 1
+      },
+      "offset": {
+        "default": 0,
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "maxChars": {
+        "default": 16000,
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50000
+      },
+      "preview": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "agentId"
+    ]
+  },
+  "dsh_send": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "agentId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "description": "Agent UUID or unique task path in this chat"
+      },
+      "message": {
+        "type": "string",
+        "minLength": 1
+      },
+      "mode": {
+        "default": "steer",
+        "type": "string",
+        "enum": [
+          "steer",
+          "followUp"
+        ]
+      },
+      "requestId": {
+        "description": "Stable retry key; reuse only for an identical operation",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      }
+    },
+    "required": [
+      "agentId",
+      "message"
+    ]
+  },
+  "dsh_message": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "agentId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "description": "Agent UUID or unique task path in this chat"
+      },
+      "message": {
+        "type": "string",
+        "minLength": 1
+      },
+      "requestId": {
+        "description": "Stable retry key; reuse only for an identical operation",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      }
+    },
+    "required": [
+      "agentId",
+      "message"
+    ]
+  },
+  "dsh_follow_up": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "agentId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "description": "Agent UUID or unique task path in this chat"
+      },
+      "message": {
+        "type": "string",
+        "minLength": 1
+      },
+      "requestId": {
+        "description": "Stable retry key; reuse only for an identical operation",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      }
+    },
+    "required": [
+      "agentId",
+      "message"
+    ]
+  },
+  "dsh_interrupt": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "agentId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "description": "Agent UUID or unique task path in this chat"
+      }
+    },
+    "required": [
+      "agentId"
+    ]
+  },
+  "dsh_stop": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "agentId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "description": "Agent UUID or unique task path in this chat"
+      }
+    },
+    "required": [
+      "agentId"
+    ]
+  },
+  "dsh_wait": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "agentIds": {
+        "minItems": 1,
+        "maxItems": 50,
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Agent UUID or unique task path in this chat"
+        }
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 3600000,
+        "description": "Custom maximum wait, 0–3600000 milliseconds; choose from the estimated task duration"
+      },
+      "runIds": {
+        "type": "object",
+        "propertyNames": {
+          "type": "string"
+        },
+        "additionalProperties": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        }
+      },
+      "afterCursor": {
+        "type": "string",
+        "minLength": 1
+      },
+      "mode": {
+        "default": "any",
+        "type": "string",
+        "enum": [
+          "any",
+          "all"
+        ]
+      },
+      "wakeOnMessages": {
+        "default": true,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "agentIds",
+      "timeoutMs"
+    ]
+  },
+  "dsh_events": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "afterCursor": {
+        "type": "string",
+        "minLength": 1
+      },
+      "limit": {
+        "default": 50,
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100
+      },
+      "eventId": {
+        "type": "string",
+        "format": "uuid",
+        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+      }
+    }
+  },
+  "dsh_result": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "completionId": {
+        "type": "string",
+        "format": "uuid",
+        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+      },
+      "offset": {
+        "default": 0,
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "maxChars": {
+        "default": 12000,
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50000
+      }
+    },
+    "required": [
+      "completionId"
+    ]
+  },
+  "dsh_ack": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "completionIds": {
+        "default": [],
+        "maxItems": 100,
+        "type": "array",
+        "items": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        }
+      },
+      "eventIds": {
+        "default": [],
+        "maxItems": 100,
+        "type": "array",
+        "items": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        }
+      }
+    }
+  },
+  "dsh_archive": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "agentId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "description": "Agent UUID or unique task path in this chat"
+      },
+      "archived": {
+        "default": true,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "agentId"
+    ]
+  },
+  "dsh_panel": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {}
+  },
+  "dsh_poll": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "cursor": {
+        "type": "string"
+      },
+      "waitMs": {
+        "default": 20000,
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 25000
+      },
+      "panelId": {
+        "type": "string",
+        "format": "uuid",
+        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+      },
+      "transportVersion": {
+        "type": "number",
+        "const": 2
+      }
+    }
+  },
+  "dsh_reply": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "agentId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "description": "Agent UUID or unique task path in this chat"
+      },
+      "requestId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "value": {
+        "type": "string"
+      },
+      "confirmed": {
+        "type": "boolean"
+      },
+      "cancelled": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "agentId",
+      "requestId"
+    ]
+  },
+  "dsh_models": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "agentId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "description": "Agent UUID or unique task path in this chat"
+      },
+      "model": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "provider",
+          "id"
+        ]
+      }
+    }
+  }
+}

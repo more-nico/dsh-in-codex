@@ -1,0 +1,11 @@
+{
+  "name": "DeepSeek 鲸鱼娘",
+  "repository": "https://github.com/ccch1mneyyy/dsh-TUI",
+  "commit": "5e0146bc8d25f8b105860a766a72d48eda385177",
+  "path": "assets/whale-girl/whale-girl.png",
+  "sha256": "2a35c4578fc5cab7d54d2d6764bdb529e0aa62be871182083c03f5559873b16a",
+  "license": "MIT",
+  "copyright": "2026 chimney (ccch1mneyyy)",
+  "modifications": "Original transparent PNG copied byte-for-byte; embedded unchanged in SVG logo/icon composition.",
+  "affiliation": "Unofficial community depiction of DeepSeek 鲸鱼娘."
+}

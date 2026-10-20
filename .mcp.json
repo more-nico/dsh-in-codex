@@ -1,0 +1,33 @@
+{
+  "mcpServers": {
+    "dsh_in_codex": {
+      "command": "/bin/sh",
+      "args": [
+        "${PLUGIN_ROOT}/scripts/launch.sh",
+        "mcp"
+      ],
+      "env_vars": [
+        "PATH",
+        "CODEX_HOME",
+        "DSH_IN_CODEX_DATA_DIR",
+        "DSH_IN_CODEX_SOCKET",
+        "DSH_IN_CODEX_DSH_PATH",
+        "DSH_IN_CODEX_NODE_PATH",
+        "DSH_IN_CODEX_CONCURRENCY",
+        "DSH_IN_CODEX_CHAT_CONCURRENCY",
+        "DSH_HOME",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+        "MOONSHOT_API_KEY",
+        "MINIMAX_API_KEY",
+        "CMDC_API_KEY",
+        "DSH_TELEMETRY_DISABLED"
+      ],
+      "startup_timeout_sec": 30,
+      "tool_timeout_sec": 3660
+    }
+  }
+}

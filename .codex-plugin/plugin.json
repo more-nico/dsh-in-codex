@@ -1,0 +1,16 @@
+{
+  "name": "dsh-in-codex",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Manage independent DSH child conversations inside the current Codex chat.",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "DSH in Codex",
+    "shortDescription": "Conversation-scoped DSH agents",
+    "iconSmall": "./assets/icon.svg",
+    "logo": "./assets/icon.svg",
+    "composerIcon": "./assets/icon.svg"
+  }
+}
