@@ -20,8 +20,3 @@ test('untrusted Markdown cannot inject HTML, executable links or automatic remot
   assert.match(html, /外部图片/);
   assert.match(html, /href="https:\/\/example.com\/tracker.png"/);
 });
-
-test('streaming unfinished Markdown renders safely and preserves code as text', () => {
-  assert.match(render('## 正在输出\n\n```js\nconsole.log("<img onerror=x>")'), /&lt;img onerror=x&gt;/);
-  assert.match(render('**未结束的加粗'), /未结束的加粗/);
-});

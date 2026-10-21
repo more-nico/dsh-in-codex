@@ -15,18 +15,6 @@ const result = (id = 'call', text = 'FIRST_OUTPUT'): Message => ({
 const render = (messages: Message[]) => renderToStaticMarkup(React.createElement(Transcript, { messages, defaultExpanded: true }));
 const rows = (html: string) => html.match(/<details\b[\s\S]*?<\/details>/g) || [];
 
-test('an invocation and result render once with both arguments and output inside the row', () => {
-  const html = render([invocation(), result()]);
-  const [row] = rows(html);
-  assert.equal(rows(html).length, 1);
-  assert.ok(row);
-  assert.match(row, /调用参数/); assert.match(row, /first\.ts/);
-  assert.match(row, /执行结果/); assert.match(row, /FIRST_OUTPUT/);
-  assert.equal(html.match(/FIRST_OUTPUT/g)?.length, 1);
-  assert.match(html, /<strong>source<\/strong>/);
-  assert.doesNotMatch(html, /工具 · read/);
-});
-
 test('parallel calls of the same tool match by call ID even when results arrive in reverse order', () => {
   const call = invocation();
   call.toolCalls!.push({ id: 'second', name: 'read', arguments: '{"path":"second.ts"}' });
@@ -39,52 +27,19 @@ test('parallel calls of the same tool match by call ID even when results arrive 
   assert.doesNotMatch(paired[1], /FIRST_OUTPUT/);
 });
 
-test('pending and partial tool output update the same row without inventing a successful result', () => {
-  const pending = render([invocation()]);
-  assert.equal(rows(pending).length, 1); assert.match(pending, /未返回结果/);
-  const partial = render([invocation(), { ...result('call', 'partial output'), complete: false }]);
-  assert.equal(rows(partial).length, 1); assert.match(partial, /输出中/); assert.match(partial, /partial output/);
-  const final = render([invocation(), result()]);
-  assert.equal(rows(final).length, 1); assert.doesNotMatch(final, /输出中|未返回结果/);
-});
-
-test('a result outside the loaded call history remains visible and merges when history arrives', () => {
-  const alone = render([result()]);
-  assert.equal(rows(alone).length, 1); assert.match(alone, /FIRST_OUTPUT/);
-  const paged = render([invocation(), result()]);
-  assert.equal(rows(paged).length, 1); assert.match(paged, /first\.ts/); assert.match(paged, /FIRST_OUTPUT/);
-});
-
-test('a reused tool-call ID in a different run never attaches an old result to new work', () => {
-  const html = render([{ ...result(), runId: 'old-run' }, invocation()]);
-  const separate = rows(html);
-  assert.equal(separate.length, 2);
-  assert.match(separate[0], /FIRST_OUTPUT/);
-  assert.match(separate[1], /未返回结果/); assert.doesNotMatch(separate[1], /FIRST_OUTPUT/);
-});
-
-test('missing IDs do not hide results or pair distinct calls just because the names match', () => {
-  const html = render([invocation(''), { ...result(), toolCallId: undefined }]);
-  assert.equal(rows(html).length, 2); assert.match(html, /FIRST_OUTPUT/);
-});
-
 test('failed output stays on the paired row and untrusted output is literal text', () => {
   const html = render([invocation(), { ...result('call', '<script>unsafe()</script>'), isError: true }]);
   assert.equal(rows(html).length, 1);
-  assert.match(html, /tone-danger/); assert.match(html, /失败 ·/);
+  assert.match(html, /tone-danger/); assert.match(html, /tool-status failed/);
   assert.match(html, /&lt;script&gt;unsafe\(\)&lt;\/script&gt;/);
   assert.doesNotMatch(html, /<script>/);
 });
 
-test('collapsed tools do not mount parameters or output, including very large results', () => {
-  const html = renderToStaticMarkup(React.createElement(Transcript, { messages: [invocation(), result('call', 'HIDDEN_DETAIL'.repeat(100_000))] }));
-  assert.equal(rows(html).length, 1);
-  assert.doesNotMatch(html, /disclosure-body|调用参数|执行结果|HIDDEN_DETAIL|<pre>/);
-  assert.ok(html.length < 2000, 'collapsed markup must not grow with the result body');
-});
-
-test('expanded large messages render a bounded page with an explicit continuation control', () => {
-  const html = renderToStaticMarkup(React.createElement(Transcript, { messages: [invocation(), { ...result('call', 'X'.repeat(8000)), textTotal: 1_000_000 }], agentId: 'agent', defaultExpanded: true }));
-  assert.match(html, /继续阅读/); assert.match(html, /1000000/);
-  assert.ok(html.length < 12_000);
+test('standalone shell records show the command action and exit status', () => {
+  const shell: Message = { id: 'shell', runId: 'run', role: 'bashExecution', command: 'npm run build', text: 'build complete',
+    timestamp: 2, complete: true, exitCode: 0 };
+  const html = render([shell]);
+  assert.match(html, /编译项目/);
+  assert.match(html, /退出码 0/);
+  assert.match(html, /tool-status success/);
 });

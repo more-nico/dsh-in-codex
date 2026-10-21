@@ -1,12 +1,24 @@
 export type Status = 'queued' | 'starting' | 'running' | 'waiting_input' | 'completed' | 'failed' | 'stopped' | 'interrupted';
 export const ACTIVE = new Set<Status>(['queued', 'starting', 'running', 'waiting_input']);
 export interface ModelChoice { provider: string; id: string; thinking?: string }
+export type PresetSlot = 'slot1' | 'slot2';
+/** Plugin-global settings. A null model slot uses DSH's native selection; there is no third plugin default. */
+export interface Settings {
+  presets: { slot1: ModelChoice | null; slot2: ModelChoice | null };
+  maxConcurrent: number;
+  maxPerThread: number;
+}
 export type ProfileName = 'worker' | 'reviewer' | 'explorer';
-export interface ToolCall { id: string; name: string; arguments: string }
+export interface ToolCall {
+  id: string; name: string; arguments: string;
+  display?: { paths?: string[]; added?: number; removed?: number; diff?: string; diffTruncated?: boolean;
+    command?: string; commandTruncated?: boolean };
+}
 export interface Message {
   id: string; runId: string; role: string; text: string; complete: boolean;
   timestamp: number; toolName?: string; toolCallId?: string; toolCalls?: ToolCall[];
   command?: string; isError?: boolean; error?: string;
+  exitCode?: number; cancelled?: boolean; truncated?: boolean;
   /** Panel-only preview/page metadata; the persisted message remains complete. */
   textTotal?: number; textOffset?: number;
 }
@@ -55,7 +67,7 @@ export interface Database {
   events: MailEvent[]; receipts: Receipt[];
 }
 export interface Snapshot { agents: Agent[]; pendingCompletions: number }
-export interface SpawnInput { name: string; task: string; context?: string; cwd?: string; model?: ModelChoice; profile?: ProfileName; path?: string; group?: string; requestId?: string }
+export interface SpawnInput { name: string; task: string; context?: string; cwd?: string; model?: ModelChoice; preset?: PresetSlot; profile?: ProfileName; path?: string; group?: string; requestId?: string }
 export interface Request { id: string; method: string; threadId?: string; args?: Record<string, any> }
 export interface Response { id: string; result?: any; error?: string }
 export type DshRecord = Record<string, any>;

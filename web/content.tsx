@@ -34,7 +34,7 @@ export function MessageContent({ text, total = text.length, source, literal = fa
   return <>
     {literal ? <pre>{value || '（空输出）'}</pre> : <MarkdownText text={value} />}
     {(truncated || page) && <div className="content-pages">
-      <span>{offset + 1}–{offset + value.length} / {length} 字符</span>
+      <span>已显示 {value.length ? `${offset + 1}–${offset + value.length}` : '0'} / 共 {length} 字符</span>
       {offset > 0 && <button disabled={loading} onClick={() => void read(Math.max(0, offset - PAGE))}>上一段</button>}
       {offset + value.length < length && source && <button disabled={loading} onClick={() => void read(offset + value.length)}>{loading ? '正在加载…' : '继续阅读'}</button>}
       {page && <button disabled={loading} onClick={() => setPage(undefined)}>返回实时预览</button>}

@@ -8,11 +8,18 @@ import { Store } from './store.js';
 import { JsonLines } from './jsonl.js';
 import { dataRoot, socketPath, errorText } from './config.js';
 import { schemas, type ToolName } from './schemas.js';
+import { DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_PER_THREAD } from './settings.js';
 import type { Request } from './types.js';
 import { randomUUID } from 'node:crypto';
 import { BUILD } from './build.js';
+import { projectEnabled, PROJECT_DISABLED } from './plugin-scope.js';
 
 const identity = { ...BUILD, pid: process.pid, instanceId: randomUUID() };
+const envLimit = (name: string, fallback: number) => {
+  const value = Number(process.env[name]);
+  if (!value) return fallback;
+  return Math.max(1, Math.min(32, Math.trunc(value)));
+};
 
 export async function runDaemon() {
   const root = dataRoot(), path = socketPath(root);
@@ -25,8 +32,8 @@ export async function runDaemon() {
     const active = await new Promise<boolean>(resolve => { const socket = createConnection(path); socket.on('connect', () => { socket.destroy(); resolve(true); }); socket.on('error', () => resolve(false)); });
     if (active) throw new Error('A daemon already owns this socket');
     await rm(path, { force: true });
-    manager = new Manager(new Store(root), { maxConcurrent: Math.max(1, Math.min(32, Number(process.env.DSH_IN_CODEX_CONCURRENCY) || 4)),
-      maxPerThread: Math.max(1, Math.min(32, Number(process.env.DSH_IN_CODEX_CHAT_CONCURRENCY) || 2)) });
+    manager = new Manager(new Store(root), { maxConcurrent: envLimit('DSH_IN_CODEX_CONCURRENCY', DEFAULT_MAX_CONCURRENT),
+      maxPerThread: envLimit('DSH_IN_CODEX_CHAT_CONCURRENCY', DEFAULT_MAX_PER_THREAD) });
     manager.on('diagnostic', (message: string) => process.stderr.write(message + '\n'));
     await manager.init();
     const service = manager;
@@ -71,6 +78,15 @@ export async function dispatch(manager: Manager, request: Request, signal?: Abor
     return manager.register({ threadId, cwd: args.cwd, permissionMode: args.permissionMode, turnId: args.turnId, updatedAt: Date.now() });
   }
   manager.assertParent(threadId);
+  const enabled = await projectEnabled(manager.parent(threadId)!.cwd);
+  if (!enabled) {
+    if (request.method === 'hook_deliver') return [];
+    if (request.method === 'dsh_panel' || request.method === 'dsh_poll') return {
+      projectEnabled: false, cursor: 'project-disabled', full: true, transportVersion: 2, agents: [], pendingCompletions: 0,
+      ...(request.method === 'dsh_panel' ? { panel: manager.panels.request(threadId) } : {}),
+    };
+    throw new Error(PROJECT_DISABLED);
+  }
   if (request.method === 'hook_deliver') {
     if (typeof request.args?.turn !== 'string') throw new Error('Hook turn is missing');
     return manager.deliveries(threadId, request.args.turn);
@@ -83,8 +99,8 @@ export async function dispatch(manager: Manager, request: Request, signal?: Abor
     case 'dsh_list': {
       return manager.list(threadId, args);
     }
-    case 'dsh_panel': return { ...manager.list(threadId), panel: manager.panels.request(threadId) };
-    case 'dsh_poll': return manager.poll(threadId, args.cursor, args.waitMs, signal, args.panelId, args.transportVersion);
+    case 'dsh_panel': return { ...manager.list(threadId), projectEnabled: true, panel: manager.panels.request(threadId) };
+    case 'dsh_poll': return { ...await manager.poll(threadId, args.cursor, args.waitMs, signal, args.panelId, args.transportVersion), projectEnabled: true };
     case 'dsh_read': return manager.read(threadId, args.agentId, args.limit, args.includeTools, args.includePartial, args.before, args);
     case 'dsh_send': return manager.send(threadId, args.agentId, args.message, args.mode);
     case 'dsh_message': return manager.messageParentToChild(threadId, args.agentId, args.message);
@@ -98,6 +114,10 @@ export async function dispatch(manager: Manager, request: Request, signal?: Abor
     case 'dsh_ack': return manager.acknowledge(threadId, args.completionIds, args.eventIds);
     case 'dsh_archive': return manager.archive(threadId, args.agentId, args.archived);
     case 'dsh_models': return manager.models(threadId, args.agentId, args.model);
+    case 'dsh_settings': return args.update ? manager.updateSettings(threadId, args.update) : manager.getSettings();
+    case 'dsh_model_migration': return args.selections
+      ? manager.importModels(args.profile, args.selections)
+      : args.profile ? manager.migrationSource(args.profile) : { profiles: await manager.migrationProfiles() };
   } };
   const opensPanel = ['dsh_spawn', 'dsh_send', 'dsh_message', 'dsh_follow_up'].includes(name);
   const result = opensPanel ? await manager.idempotent(threadId, name, args, execute) : await execute();

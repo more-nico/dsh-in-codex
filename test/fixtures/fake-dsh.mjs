@@ -72,10 +72,10 @@ function handle(command) {
       else if (process.argv.includes('--slow-state')) setTimeout(() => response(command, { model, thinkingLevel, sessionFile, bridgeVersion: 1, capabilities: ['resume', 'steer', 'cancel', 'questions', 'tool-guard'], isStreaming: running }), 5000);
       else response(command, { model, thinkingLevel, sessionFile, sessionId: 'fake-session', bridgeVersion: 1, capabilities: ['resume', 'steer', 'cancel', 'questions', 'tool-guard'], isStreaming: running });
       break;
-    case 'get_available_models': response(command, { models: [model] }); break;
+    case 'get_available_models': response(command, { models: [{ ...model, name: 'Test model', contextWindow: 1000000, input: ['text', 'image'], reasoningEfforts: ['off', 'high', 'max'] }] }); break;
     case 'get_available_thinking_levels': response(command, { levels: ['off', 'high', 'max'] }); break;
-    case 'set_model': model = { provider: command.provider, id: command.modelId }; response(command, model); break;
-    case 'set_thinking_level': thinkingLevel = command.level; response(command, {}); break;
+    case 'set_model': if (!process.argv.includes('--ignore-set-model')) model = { provider: command.provider, id: command.modelId }; response(command, model); break;
+    case 'set_thinking_level': if (!process.argv.includes('--ignore-set-thinking')) thinkingLevel = command.level; response(command, {}); break;
     case 'prompt': if (command.message === 'prompt-fail') emit({ id: command.id, type: 'response', command: command.type, success: false, error: 'prompt rejected' }); else if (running && command.streamingBehavior) handle({ ...command, type: command.streamingBehavior === 'followUp' ? 'follow_up' : 'steer' }); else begin(command); break;
     case 'steer': case 'follow_up': {
       response(command, { disposition: 'queued' });

@@ -186,7 +186,13 @@ export function createNativeBridge(ctx, config, emit) {
         isStreaming: active || agent?.status === 'running', isCompacting: false, pendingMessageCount: agent ? agent.inbox.nextStep.length + agent.inbox.nextTurn.length : 0 };
       case 'get_available_models': {
         const models = [];
-        for (const provider of ctx.llm.listProviders()) for (const model of await ctx.llm.listModels(provider.id)) models.push({ ...model, provider: provider.id });
+        for (const provider of ctx.llm.listProviders()) for (const model of await ctx.llm.listModels(provider.id)) {
+          const info = await ctx.llm.resolveModelInfo(provider.id, model.id);
+          models.push({ provider: provider.id, id: model.id, name: model.name,
+            contextWindow: info.context?.contextWindow ?? null,
+            input: info.inputModalities ?? model.inputModalities ?? null,
+            reasoningEfforts: info.reasoning?.efforts?.map(effort => effort.id) ?? [] });
+        }
         return { models };
       }
       case 'get_available_thinking_levels': return { levels: modelInfo.reasoning?.efforts.map(e => e.id) || [] };

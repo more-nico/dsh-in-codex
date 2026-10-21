@@ -1,15 +1,18 @@
 import { z } from 'zod';
 import { MAX_WAIT_MS } from './wait.js';
+import { MAX_CONCURRENCY } from './settings.js';
 const text = z.string().trim().min(1);
 const agentId = text.max(200).describe('Agent UUID or unique task path in this chat');
 const requestId = text.max(200).optional().describe('Stable retry key; reuse only for an identical operation');
 const path = text.max(200).regex(/^[\p{L}\p{N}_-]+(?:\/[\p{L}\p{N}_-]+)*$/u);
+const modelChoice = z.object({ provider: text, id: text, thinking: text.optional() });
+const concurrency = z.number().int().min(1).max(MAX_CONCURRENCY);
 export const schemas = {
-  dsh_spawn: z.object({ name: text.max(120), task: text, context: z.string().optional(), cwd: text.optional(), model: z.object({ provider: text, id: text, thinking: text.optional() }).optional(), profile: z.enum(['worker', 'reviewer', 'explorer']).optional(), path: path.optional(), group: text.max(120).optional(), requestId }),
+  dsh_spawn: z.object({ name: text.max(120), task: text, context: z.string().optional(), cwd: text.optional(), model: modelChoice.optional(), preset: z.enum(['slot1', 'slot2']).optional().describe('slot1 "常规模型" (Regular) for general tasks; slot2 "增强模型" (Enhanced) for complex tasks or deeper reasoning. Call dsh_models first, then choose the slot explicitly; the same model/effort may fill both. An explicit model always wins, and a null slot inherits the DSH profile\'s native model/thinking at spawn time (the temporary probe selection does not bind it). No automatic selection or upgrade'), profile: z.enum(['worker', 'reviewer', 'explorer']).optional(), path: path.optional(), group: text.max(120).optional(), requestId }),
   dsh_list: z.object({ pathPrefix: path.optional(), group: text.optional(), includeArchived: z.boolean().default(false) }),
   dsh_read: z.object({ agentId, limit: z.number().int().min(1).max(200).default(5), includeTools: z.boolean().default(false), includePartial: z.boolean().default(true), before: z.string().optional(),
     messageId: text.optional().describe('Read one exact message in bounded text pages'), offset: z.number().int().min(0).default(0), maxChars: z.number().int().min(1).max(50_000).default(16_000), preview: z.boolean().default(false) }),
-  dsh_send: z.object({ agentId, message: text, mode: z.enum(['steer', 'followUp']).default('steer'), requestId }),
+  dsh_send: z.object({ agentId, message: text, mode: z.enum(['steer', 'followUp']).default('followUp'), requestId }),
   dsh_message: z.object({ agentId, message: text, requestId }),
   dsh_follow_up: z.object({ agentId, message: text, requestId }),
   dsh_interrupt: z.object({ agentId }),
@@ -23,6 +26,15 @@ export const schemas = {
   dsh_poll: z.object({ cursor: z.string().optional(), waitMs: z.number().int().min(0).max(25_000).default(20_000), panelId: z.string().uuid().optional(), transportVersion: z.literal(2).optional() }),
   dsh_reply: z.object({ agentId, requestId: text, value: z.string().optional(), confirmed: z.boolean().optional(), cancelled: z.boolean().default(false) }),
   dsh_models: z.object({ agentId: agentId.optional(), model: z.object({ provider: text, id: text }).optional() }),
+  dsh_settings: z.object({ update: z.object({
+    presets: z.object({ slot1: modelChoice.nullable().optional(), slot2: modelChoice.nullable().optional() }).strict().optional(),
+    maxConcurrent: concurrency.optional(),
+    maxPerThread: concurrency.optional(),
+  }).strict().optional() }),
+  dsh_model_migration: z.object({
+    profile: text.optional(),
+    selections: z.array(z.object({ adapter: text, provider: text, models: z.array(text).min(1) }).strict()).min(1).optional(),
+  }).strict().refine(value => !value.selections || !!value.profile, '导入模型时必须选择来源 profile'),
 };
 export type ToolName = keyof typeof schemas;
 export function resolveThread(metadata: Record<string, unknown> | undefined) {

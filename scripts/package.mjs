@@ -10,7 +10,7 @@ for (const entry of manifest.files) {
   await mkdir(`${root}/${entry.includes('/') ? entry.slice(0, entry.lastIndexOf('/')) : '.'}`, { recursive: true });
   await cp(entry, `${root}/${entry}`, { recursive: true });
 }
-await writeFile(`${root}/INSTALL.txt`, 'Install: node bin/dsh-in-codex.mjs install\nDiagnose: node bin/dsh-in-codex.mjs doctor\nThen restart Codex, enable DSH in Codex, and review/trust its hooks.\n');
+await writeFile(`${root}/INSTALL.txt`, 'Install: node bin/dsh-in-codex.mjs install\nEnable one project: node bin/dsh-in-codex.mjs project enable --project /path/to/project\nThen reload Codex and review/trust its hooks. New projects cannot use DSH until explicitly enabled.\n');
 await rm(`release/${archive}`, { force: true });
 execFileSync('/usr/bin/zip', ['-qr', archive, 'dsh-in-codex'], { cwd: 'release', stdio: 'inherit' });
 const checksum = createHash('sha256').update(await readFile(`release/${archive}`)).digest('hex');

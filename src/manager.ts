@@ -8,10 +8,14 @@ import { Store } from './store.js';
 import { DshProcess, bridgeArgs, assertDshVersion } from './dsh.js';
 import { errorText } from './config.js';
 import { validateWaitTimeout } from './wait.js';
-import { ACTIVE, type Agent, type Completion, type MailEvent, type Message, type Parent, type DshRecord, type SpawnInput, type ToolCall } from './types.js';
+import { ACTIVE, type Agent, type Completion, type MailEvent, type Message, type ModelChoice, type Parent, type DshRecord, type Settings, type SpawnInput, type ToolCall } from './types.js';
 import { profiles } from './profiles.js';
 import { PanelPresence } from './panel.js';
 import { PanelFeed, PANEL_INTERVAL_MS, pausePanel, previewMessage } from './panel-feed.js';
+import { SettingsStore, cloneModel, cloneSettings, discoverPresets, environmentDefaults, mergeSettings, updatedModels, type SettingsUpdate } from './settings.js';
+import { projectEnabled, PROJECT_DISABLED } from './plugin-scope.js';
+import { toolDisplayMetadata } from './tool-metadata.js';
+import { inspectMigrationSource, listMigrationProfiles, migrateModels, type MigrationSelection } from './model-migration.js';
 
 export interface ManagerOptions { executable?: string; prefixArgs?: string[]; maxConcurrent?: number; maxPerThread?: number; idleMs?: number; extraArgs?: string[]; extensionPath?: string }
 export interface WaitOptions { runIds?: Record<string, string>; afterCursor?: string; mode?: 'any' | 'all'; wakeOnMessages?: boolean }
@@ -28,6 +32,7 @@ const toolCalls = (value: DshRecord): ToolCall[] | undefined => Array.isArray(va
   ? value.content.filter((block: any) => block?.type === 'toolCall' && typeof block.name === 'string').map((block: any) => ({
       id: String(block.id || ''), name: String(block.name),
       arguments: String(JSON.stringify(block.arguments ?? {})).slice(0, MAX_ARGUMENT_LENGTH),
+      display: toolDisplayMetadata(block.name, block.arguments),
     }))
   : undefined;
 const actions: Record<string, string> = { read: 'reading', bash: 'running command', edit: 'editing', write: 'writing', grep: 'searching', find: 'finding files', ls: 'listing' };
@@ -52,9 +57,20 @@ export class Manager extends EventEmitter {
   private revisionEpoch = randomUUID();
   private schedulingOrder = new Map<string, number>();
   private schedulingTurn = 0;
-  constructor(readonly store: Store, private options: ManagerOptions = {}) { super(); }
+  readonly settingsStore: SettingsStore;
+  constructor(readonly store: Store, private options: ManagerOptions = {}) {
+    super();
+    // Constructor options and environment variables seed first-run defaults.
+    // A persisted settings.json always wins on the next load.
+    const environment = environmentDefaults();
+    this.settingsStore = new SettingsStore(store.root, {
+      maxConcurrent: options.maxConcurrent ?? environment.maxConcurrent,
+      maxPerThread: options.maxPerThread ?? environment.maxPerThread,
+    });
+  }
   async init() {
     await this.store.load();
+    await this.settingsStore.load();
     for (const receipt of this.store.data.receipts) if (receipt.state === 'pending') receipt.state = 'uncertain';
     for (const agent of this.store.data.agents) {
       if (ACTIVE.has(agent.status)) {
@@ -96,6 +112,95 @@ export class Manager extends EventEmitter {
   }
   assertParent(threadId: string) {
     if (!this.parent(threadId)) throw new Error('This conversation has not been registered by trusted dsh_in_codex hooks. Enable/trust the hooks, then start a new turn.');
+  }
+  private limits() {
+    const settings = this.settingsStore.data;
+    return { maxConcurrent: settings.maxConcurrent, maxPerThread: settings.maxPerThread };
+  }
+  getSettings(): { settings: Settings; effective: { maxConcurrent: number; maxPerThread: number } } {
+    const settings = this.settingsStore.data;
+    return { settings: cloneSettings(settings),
+      effective: { maxConcurrent: settings.maxConcurrent, maxPerThread: settings.maxPerThread } };
+  }
+  async updateSettings(threadId: string, update: SettingsUpdate) {
+    this.assertParent(threadId);
+    return this.serial('settings', async () => {
+      this.assertHealthy();
+      const next = mergeSettings(this.settingsStore.data, update);
+      const choices = updatedModels(update);
+      // Provider/model/effort capability is checked before anything is persisted.
+      // Concurrency-only updates never spawn a probe process.
+      if (choices.length) await this.validateModelChoices(threadId, choices);
+      await this.settingsStore.save(next);
+      // Limits apply to subsequent scheduling immediately; an increase starts
+      // queued work now, while a decrease never terminates running tasks.
+      this.pump();
+      // Settings are plugin-global, so every open chat panel may need a new
+      // effective-limit/queue-position snapshot.
+      for (const parent of this.store.data.parents) this.changed(parent.threadId, false);
+      return this.getSettings();
+    });
+  }
+  migrationProfiles() { return listMigrationProfiles(); }
+  migrationSource(profile: string) { return inspectMigrationSource(profile); }
+  importModels(profile: string, selections: MigrationSelection[]) {
+    return this.serial('model-migration', () => migrateModels(profile, selections));
+  }
+  /** Resolve spawn-time model precedence without merging fields across sources. */
+  private spawnModel(input: SpawnInput): ModelChoice | undefined {
+    const settings = this.settingsStore.data;
+    // explicit model > explicitly selected preset > DSH native selection.
+    // An empty slot is not a plugin default and never triggers automatic routing.
+    const selected = input.model ?? (input.preset ? settings.presets[input.preset] : null);
+    return selected ? cloneModel(selected) || undefined : undefined;
+  }
+  private async withProbe<T>(cwd: string, action: (dsh: DshProcess) => Promise<T>): Promise<T> {
+    const dsh = new DshProcess(this.options.executable || process.env.DSH_IN_CODEX_DSH_PATH || 'dsh',
+      [...(this.options.prefixArgs || []), ...await bridgeArgs(join(this.store.root, 'probe'), this.options.extraArgs, this.options.extensionPath)], cwd,
+      { DSH_IN_CODEX_SESSION: JSON.stringify({ probe: true }) });
+    const onFault = () => {};
+    dsh.on('fault', onFault);
+    try { return await action(dsh); } finally { dsh.off('fault', onFault); await dsh.close(); }
+  }
+  private async validateModelChoices(threadId: string, choices: ModelChoice[]) {
+    const cwd = this.parent(threadId)?.cwd || this.store.root;
+    await this.withProbe(cwd, async dsh => {
+      const catalog = await dsh.command('get_available_models');
+      const available = new Set<string>();
+      for (const item of Array.isArray(catalog.models) ? catalog.models : []) {
+        if (typeof item?.provider === 'string' && typeof item?.id === 'string') available.add(`${item.provider}/${item.id}`);
+      }
+      if (!available.size) throw new Error('No DSH models are configured in the dedicated DSH profile; configure a provider before saving a model setting');
+      const levels = new Map<string, string[]>();
+      const unique = new Map<string, ModelChoice>();
+      for (const choice of choices) unique.set(`${choice.provider}/${choice.id}`, choice);
+      for (const [label, choice] of unique) {
+        if (!available.has(label)) throw new Error(`Model ${label} is not available in the dedicated DSH profile. Available models: ${[...available].slice(0, 30).join(', ')}`);
+        try { await dsh.command('set_model', { provider: choice.provider, modelId: choice.id }); }
+        catch (error) { throw new Error(`DSH rejected model ${label}: ${errorText(error)}`); }
+        const state = await dsh.command('get_state');
+        if (state.model?.provider !== choice.provider || state.model?.id !== choice.id) {
+          throw new Error(`DSH did not accept model ${label}; it selected ${state.model ? `${state.model.provider}/${state.model.id}` : '(none)'} instead`);
+        }
+        const result = await dsh.command('get_available_thinking_levels');
+        levels.set(label, Array.isArray(result.levels) ? result.levels : []);
+      }
+      for (const choice of choices) {
+        if (choice.thinking === undefined) continue;
+        const label = `${choice.provider}/${choice.id}`, supported = levels.get(label) || [];
+        if (!supported.includes(choice.thinking)) {
+          throw new Error(`Thinking level "${choice.thinking}" is not supported by ${label}. Available levels: ${supported.join(', ') || '(none)'}`);
+        }
+        // The first loop leaves the last probed model selected; re-select this
+        // choice's model before validating its effort against that model.
+        try { await dsh.command('set_model', { provider: choice.provider, modelId: choice.id }); }
+        catch (error) { throw new Error(`DSH rejected model ${label}: ${errorText(error)}`); }
+        try { await dsh.command('set_thinking_level', { level: choice.thinking }); }
+        catch (error) { throw new Error(`DSH rejected thinking level "${choice.thinking}" for ${label}: ${errorText(error)}`); }
+        const state = await dsh.command('get_state');
+        if (state.thinkingLevel !== choice.thinking) throw new Error(`DSH did not accept thinking level "${choice.thinking}" for ${label}; it selected "${state.thinkingLevel || '(none)'}" instead`);
+      }
+    });
   }
   async idempotent(threadId: string, method: string, args: Record<string, any>, action: () => Promise<any>) {
     if (!args.requestId) return action();
@@ -140,10 +245,10 @@ export class Manager extends EventEmitter {
   }
   private queueInfo(agent: Agent) {
     if (agent.status !== 'queued') return {};
-    const active = this.store.data.agents.filter(busy);
+    const active = this.store.data.agents.filter(busy), limits = this.limits();
     return { queuePosition: this.store.data.agents.filter(item => item.threadId === agent.threadId && item.status === 'queued').findIndex(item => item.id === agent.id) + 1,
-      queueReason: active.filter(item => item.threadId === agent.threadId).length >= (this.options.maxPerThread ?? 2) ? 'chat_limit'
-        : active.length >= (this.options.maxConcurrent ?? 4) ? 'global_limit' : 'fair_queue' };
+      queueReason: active.filter(item => item.threadId === agent.threadId).length >= limits.maxPerThread ? 'chat_limit'
+        : active.length >= limits.maxConcurrent ? 'global_limit' : 'fair_queue' };
   }
   list(threadId: string, options: { pathPrefix?: string; group?: string; includeArchived?: boolean } = {}) {
     this.assertParent(threadId);
@@ -215,7 +320,7 @@ export class Manager extends EventEmitter {
     if (input.path && this.store.data.agents.some(agent => agent.threadId === threadId && agent.path === input.path)) throw new Error('Task path already exists in this chat');
     const now = Date.now();
     const agent: Agent = { id: randomUUID(), threadId, name: input.name, task: input.task, context: input.context,
-      cwd, model: input.model, status: 'queued', runId: randomUUID(), createdAt: now, activity: 'queued',
+      cwd, model: this.spawnModel(input), status: 'queued', runId: randomUUID(), createdAt: now, activity: 'queued',
       messages: [], tokens: 0, toolUses: 0, dialogs: [], queued: [], pendingMessages: 0, inbox: [], profile: input.profile || 'worker', path: input.path, group: input.group };
     this.store.data.agents.push(agent);
     await this.persist(); this.changed(threadId, false); this.pump();
@@ -223,9 +328,10 @@ export class Manager extends EventEmitter {
   }
   private pump() {
     if (this.stopping) return;
-    while (this.store.data.agents.filter(busy).length < (this.options.maxConcurrent ?? 4)) {
+    const limits = this.limits();
+    while (this.store.data.agents.filter(busy).length < limits.maxConcurrent) {
       const active = this.store.data.agents.filter(busy);
-      const eligible = this.store.data.agents.filter(agent => agent.status === 'queued' && active.filter(item => item.threadId === agent.threadId).length < (this.options.maxPerThread ?? 2));
+      const eligible = this.store.data.agents.filter(agent => agent.status === 'queued' && active.filter(item => item.threadId === agent.threadId).length < limits.maxPerThread);
       const threads = [...new Set(eligible.map(agent => agent.threadId))];
       const thread = threads.sort((a, b) => (this.schedulingOrder.get(a) || 0) - (this.schedulingOrder.get(b) || 0))[0];
       const agent = eligible.find(agent => agent.threadId === thread);
@@ -243,6 +349,7 @@ export class Manager extends EventEmitter {
     }
   }
   private async start(agent: Agent) {
+    if (!await projectEnabled(this.parent(agent.threadId)!.cwd)) throw new Error(PROJECT_DISABLED);
     let dsh = this.processes.get(agent.id);
     const timer = this.idle.get(agent.id); if (timer) { clearTimeout(timer); this.idle.delete(agent.id); }
     if (!dsh) {
@@ -280,10 +387,17 @@ export class Manager extends EventEmitter {
       if (typeof state.sessionFile === 'string') agent.sessionFile = state.sessionFile;
       if (agent.model) await dsh.command('set_model', { provider: agent.model.provider, modelId: agent.model.id });
       const effective = await dsh.command('get_state');
+      if (agent.model && (effective.model?.provider !== agent.model.provider || effective.model?.id !== agent.model.id)) {
+        throw new Error(`DSH did not select requested model ${agent.model.provider}/${agent.model.id}; actual model is ${effective.model ? `${effective.model.provider}/${effective.model.id}` : '(none)'}`);
+      }
       const thinking = agent.model?.thinking || effective.thinkingLevel;
       const levels = await dsh.command('get_available_thinking_levels');
-      if (thinking && !levels.levels?.includes(thinking)) throw new Error(`Thinking level ${thinking} is unavailable for this dsh model`);
-      if (agent.model?.thinking) await dsh.command('set_thinking_level', { level: agent.model.thinking });
+      if (thinking && !levels.levels?.includes(thinking)) throw new Error(`Thinking level "${thinking}" is unavailable for ${agent.model ? `${agent.model.provider}/${agent.model.id}` : 'the selected dsh model'}. Available levels: ${levels.levels?.join(', ') || '(none)'}`);
+      if (agent.model?.thinking) {
+        await dsh.command('set_thinking_level', { level: agent.model.thinking });
+        const confirmed = await dsh.command('get_state');
+        if (confirmed.thinkingLevel !== agent.model.thinking) throw new Error(`DSH did not select requested thinking level "${agent.model.thinking}"; actual level is "${confirmed.thinkingLevel || '(none)'}"`);
+      }
       if (effective.model) agent.model = { provider: effective.model.provider, id: effective.model.id, thinking };
     }
     if (!ACTIVE.has(agent.status) || this.stopping) return;
@@ -303,6 +417,7 @@ export class Manager extends EventEmitter {
         this.mail(agent, 'input', 'DSH extension handled the input without starting a run. Send a new instruction or stop the task.');
       }
       while (agent.queued.length) {
+        if (!await projectEnabled(this.parent(agent.threadId)!.cwd)) throw new Error(PROJECT_DISABLED);
         const input = agent.queued[0];
         // prompt+streamingBehavior also starts work if DSH became idle before
         // reading this command, avoiding a stranded steer/follow_up queue.
@@ -320,6 +435,9 @@ export class Manager extends EventEmitter {
       toolName: value.toolName, toolCallId: value.toolCallId, toolCalls: role === 'assistant' ? toolCalls(value) : undefined,
       command: role === 'bashExecution' ? String(value.command ?? '') : undefined,
       isError: typeof value.isError === 'boolean' ? value.isError : undefined,
+      exitCode: Number.isInteger(value.exitCode) ? value.exitCode : undefined,
+      cancelled: typeof value.cancelled === 'boolean' ? value.cancelled : undefined,
+      truncated: typeof value.truncated === 'boolean' ? value.truncated : undefined,
       error: value.errorMessage ? errorText(value.errorMessage) : undefined };
     if (current && !current.complete && current.role === role) agent.messages[agent.messages.length - 1] = message;
     else agent.messages.push(message);
@@ -441,7 +559,7 @@ export class Manager extends EventEmitter {
     this.locks.set(id, next); next.finally(() => { if (this.locks.get(id) === next) this.locks.delete(id); }).catch(() => {});
     return next;
   }
-  async send(threadId: string, id: string, message: string, mode: 'steer' | 'followUp' = 'steer') {
+  async send(threadId: string, id: string, message: string, mode: 'steer' | 'followUp' = 'followUp') {
     const requested = this.owned(threadId, id), requestedRun = requested.runId, requestedActive = ACTIVE.has(requested.status);
     id = requested.id;
     return this.serial(id, async () => {
@@ -481,13 +599,13 @@ export class Manager extends EventEmitter {
       const message = agent.messages.find(item => item.id === options.messageId);
       if (!message) throw new Error('Message not found in this conversation');
       const offset = options.offset || 0, max = options.maxChars || 16_000;
-      return { agentId: agent.id, runId: agent.runId, status: agent.status,
+      return { agentId: agent.id, name: agent.name, runId: agent.runId, status: agent.status,
         messages: [{ ...message, text: message.text.slice(offset, offset + max), textTotal: message.text.length, textOffset: offset }], hasMore: offset + max < message.text.length };
     }
     const end = before ? agent.messages.findIndex(message => message.id === before) : agent.messages.length;
     if (end < 0) throw new Error('Unknown message cursor');
     const eligible = agent.messages.slice(0, end).filter(message => (includeTools || ['user', 'assistant'].includes(message.role)) && (includePartial || message.complete));
-    return { agentId: agent.id, runId: agent.runId, status: agent.status, messages: options.preview ? eligible.slice(-limit).map(previewMessage) : eligible.slice(-limit), hasMore: eligible.length > limit,
+    return { agentId: agent.id, name: agent.name, runId: agent.runId, status: agent.status, messages: options.preview ? eligible.slice(-limit).map(previewMessage) : eligible.slice(-limit), hasMore: eligible.length > limit,
       undeliveredMessages: options.preview ? [] : agent.undelivered || [], inbox: options.preview ? [] : agent.inbox || [] };
   }
   async interrupt(threadId: string, id: string) {
@@ -585,7 +703,7 @@ export class Manager extends EventEmitter {
       agents: targets.map(({ agent, runId }) => {
         const result = this.store.data.completions.findLast(result => result.runId === runId && result.agentId === agent.id);
         const preview = result?.text.slice(0, Math.min(4000, resultBudget)); resultBudget -= preview?.length || 0;
-        return { agentId: agent.id, runId, currentRunId: agent.runId, status: agent.status, dialogs: agent.dialogs,
+        return { agentId: agent.id, name: agent.name, runId, currentRunId: agent.runId, status: agent.status, dialogs: agent.dialogs,
           ...(result ? { result: { ...result, text: preview!, truncated: result.text.length > preview!.length, totalChars: result.text.length } } : {}) };
       }) };
   }
@@ -640,10 +758,32 @@ export class Manager extends EventEmitter {
     const onFault = () => {}; dsh.on('fault', onFault);
     try {
       if (model) await dsh.command('set_model', { provider: model.provider, modelId: model.id });
-      const [state, models, levels] = await Promise.all([dsh.command('get_state'), dsh.command('get_available_models'), dsh.command('get_available_thinking_levels')]);
-      return { selected: state.model ? { provider: state.model.provider, id: state.model.id, thinking: state.thinkingLevel } : undefined,
-        models: models.models?.map((model: any) => ({ provider: model.provider, id: model.id, name: model.name, reasoning: model.reasoning })),
-        thinkingLevels: levels.levels, thinkingLevelsFor: state.model ? { provider: state.model.provider, id: state.model.id } : undefined };
+      const models = await dsh.command('get_available_models');
+      const view = this.getSettings();
+      const result = {
+        presets: discoverPresets(view.settings.presets),
+        settings: view.settings,
+        effective: view.effective,
+        all_models: (models.models || []).map((item: any) => ({
+          provider: item.provider, id: item.id, name: item.name || item.id,
+          contextWindow: Number.isSafeInteger(item.contextWindow) && item.contextWindow > 0 ? item.contextWindow : null,
+          input: Array.isArray(item.input) ? item.input : null,
+          reasoningEfforts: Array.isArray(item.reasoningEfforts) ? item.reasoningEfforts : null,
+        })),
+      };
+      if (!model && !agent) return result;
+      if (agent && temporary && !model) return { ...result, agent_model: agent.model || null, agent_model_source: 'stored-task-state' };
+      const [state, levels] = await Promise.all([dsh.command('get_state'), dsh.command('get_available_thinking_levels')]);
+      if (model) {
+        if (state.model?.provider !== model.provider || state.model?.id !== model.id) throw new Error('The DSH model probe did not select the requested model');
+        return { ...result, probe: {
+          model: { provider: state.model.provider, id: state.model.id },
+          thinkingLevels: levels.levels,
+        } };
+      }
+      return { ...result, agent_model: state.model ? {
+        provider: state.model.provider, id: state.model.id, thinking: state.thinkingLevel,
+      } : null, agent_model_source: 'live-dsh', thinkingLevels: levels.levels };
     } finally { dsh.off('fault', onFault); if (temporary) await dsh.close(); }
   }
   async close() {
@@ -652,7 +792,7 @@ export class Manager extends EventEmitter {
     for (const timer of this.dialogTimers.values()) clearTimeout(timer);
     const processes = [...this.processes.values()]; this.processes.clear();
     for (const agent of this.store.data.agents) if (ACTIVE.has(agent.status)) { agent.status = 'interrupted'; agent.activity = 'interrupted'; agent.finishedAt = Date.now(); this.addCompletion(agent, true); }
-    await Promise.all(processes.map(dsh => dsh.close())); await this.persist();
+    await Promise.all(processes.map(dsh => dsh.close())); await this.settingsStore.flush(); await this.persist();
   }
 }
 

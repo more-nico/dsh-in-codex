@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
@@ -84,10 +84,14 @@ export async function bridgeArgs(root: string, extraArgs: string[] = [], bridgeP
   const path = join(root, 'bridge.patch.yml');
   const bundled = fileURLToPath(new URL('./parent.mjs', import.meta.url));
   const module = bridgePath || (existsSync(bundled) ? bundled : fileURLToPath(new URL('../extensions/parent.mjs', import.meta.url)));
-  await writeFile(path, JSON.stringify([
+  // Parallel probes share this directory. Rename a complete file into place so
+  // a concurrently spawned DSH process can never read a truncated patch.
+  const temporary = join(root, `bridge.${randomUUID()}.tmp`);
+  await writeFile(temporary, JSON.stringify([
     { id: 'sdk-jsonrpc-server', disabled: true },
     { insert: [{ id: 'dsh-in-codex-bridge', name: resolve(module), inject: ['sdkAppStartup', 'loader'] }] },
   ], null, 2), { mode: 0o600 });
+  await rename(temporary, path);
   return ['--profile', DSH_PROFILE, ...extraArgs, '--patch', path];
 }
 

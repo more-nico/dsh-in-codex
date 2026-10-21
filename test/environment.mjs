@@ -1,6 +1,11 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-const home = mkdtempSync(join(tmpdir(), 'dsh-test-home-'));
-process.env.DSH_HOME = home;
-process.on('exit', () => rmSync(home, { recursive: true, force: true }));
+const root = mkdtempSync(join(tmpdir(), 'dsh-test-home-'));
+process.env.DSH_HOME = join(root, 'dsh');
+process.env.CODEX_HOME = join(root, 'codex');
+const plugin = join(process.env.CODEX_HOME, 'plugins', 'dsh-in-codex');
+mkdirSync(plugin, { recursive: true });
+writeFileSync(join(plugin, '.dsh-in-codex-install.json'), '{"version":"0.1.0"}');
+writeFileSync(join(process.env.CODEX_HOME, 'config.toml'), '[plugins."dsh-in-codex@local-plugins"]\nenabled = true\n');
+process.on('exit', () => rmSync(root, { recursive: true, force: true }));

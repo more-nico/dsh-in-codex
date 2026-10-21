@@ -3,12 +3,17 @@ import { ensureDaemon, request } from './client.js';
 import { formatDelivery } from './manager.js';
 import { errorText } from './config.js';
 import type { Completion, MailEvent } from './types.js';
+import { projectEnabled } from './plugin-scope.js';
 
 export async function runHook(input: Record<string, any>) {
   const event = input.hook_event_name;
   if (typeof input.session_id !== 'string' || typeof input.cwd !== 'string') throw new Error('Hook session_id and cwd are required');
   await ensureDaemon();
   await request('hook_register', input.session_id, { cwd: input.cwd, permissionMode: input.permission_mode, turnId: input.turn_id });
+  if (!await projectEnabled(input.cwd)) {
+    return event === 'UserPromptSubmit' ? { hookSpecificOutput: { hookEventName: event, additionalContext:
+      'DSH in Codex is disabled for this project. Do not call dsh_* tools or delegate to DSH. If the user asks to enable it, run node "${CODEX_HOME:-$HOME/.codex}/plugins/dsh-in-codex/bin/dsh-in-codex.mjs" project enable --project ' + JSON.stringify(input.cwd) + '. This is a local configuration command, not a DSH tool.' } } : {};
+  }
   // Turn-scoped events must agree on the same key; session-only events get a fresh receipt opportunity.
   const turn = input.turn_id || `${event}:${randomUUID()}`;
   const results: Array<Completion | MailEvent> = await request('hook_deliver', input.session_id, { turn });

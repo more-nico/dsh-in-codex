@@ -1,7 +1,8 @@
 import { BUILD } from "../src/build.js";
 import { App } from '@modelcontextprotocol/ext-apps';
-import type { Agent, Message } from '../src/types.js';
+import type { Agent, Message, ModelChoice } from '../src/types.js';
 import { PanelFeed, previewMessage } from '../src/panel-feed.js';
+import { defaultSettings, normalizeSettings, type DiscoveredModel, type EffectiveSettings, type Settings } from './settings-types.js';
 
 export const demo = new URLSearchParams(location.search).has('demo');
 let application: App | undefined;
@@ -18,7 +19,7 @@ export function connect(onContext: (context: any) => void) {
 }
 export async function call(name: string, args: Record<string, any> = {}, signal?: AbortSignal): Promise<any> {
   if (name === 'dsh_poll') args = { ...args, panelId, transportVersion: 2 };
-  if (demo) return demoCall(name, args);
+  if (demo) return demoCall(name, args, signal);
   if (!application || !connection) throw new Error('Panel is not connected to Codex');
   await connection;
   const result = await application.callServerTool({ name, arguments: args }, { signal });
@@ -99,13 +100,85 @@ if (new URLSearchParams(location.search).has('performance')) sample.push({
     { id: 'large-result', runId: 'demo-large-run', role: 'toolResult', toolCallId: 'large-tool', toolName: 'bash', text: Array.from({ length: 10_000 }, (_, i) => `PERF_LOG_LINE ${i + 1}: passed\n`).join(''), complete: true, timestamp: now },
   ],
 });
+if (demo && new URLSearchParams(location.search).has('tool-cards')) sample.push({
+  id: 'demo-tool-cards', threadId: 'demo', name: '工具卡片预览', cwd: '/workspace/dsh_in_codex', status: 'running', runId: 'demo-tool-cards-run',
+  task: '核对工具调用的摘要和详情', activity: 'responding', createdAt: now + 1000, startedAt: now + 1000,
+  tokens: 2000, toolUses: 6, dialogs: [], queued: [], pendingMessages: 0, messages: [
+    { id: 'cards-call', runId: 'demo-tool-cards-run', role: 'assistant', text: '检查以下工具调用的展示。', complete: true, timestamp: now - 3000,
+      toolCalls: [
+        { id: 'cards-test', name: 'bash', arguments: JSON.stringify({ command: 'npm test' }) },
+        { id: 'cards-edit', name: 'edit', arguments: '{"file_path":"src/manager.ts","old_string":"', display: { paths: ['src/manager.ts'], added: 2, removed: 1, diff: '-old line\n+new line\n+another line' } },
+        { id: 'cards-read', name: 'read', arguments: JSON.stringify({ file_path: 'src/manager.ts', offset: 323, limit: 63 }) },
+        { id: 'cards-search', name: 'grep', arguments: JSON.stringify({ pattern: 'agentId', path: 'src' }) },
+        { id: 'cards-wait', name: 'dsh_wait', arguments: JSON.stringify({ agentIds: ['task-a'], timeoutMs: 30000 }) },
+        { id: 'cards-build', name: 'exec_command', arguments: JSON.stringify({ cmd: 'npm run build' }) },
+      ] },
+    { id: 'cards-test-result', runId: 'demo-tool-cards-run', role: 'toolResult', toolName: 'bash', toolCallId: 'cards-test', text: 'ℹ tests 24\nℹ pass 24\nℹ fail 0', complete: true, timestamp: now - 1500, exitCode: 0 },
+    { id: 'cards-edit-result', runId: 'demo-tool-cards-run', role: 'toolResult', toolName: 'edit', toolCallId: 'cards-edit', text: 'Updated src/manager.ts', complete: true, timestamp: now - 1400 },
+    { id: 'cards-read-result', runId: 'demo-tool-cards-run', role: 'toolResult', toolName: 'read', toolCallId: 'cards-read', text: '323: function render() {\n324:   return true;\n}', complete: true, timestamp: now - 1300 },
+    { id: 'cards-search-result', runId: 'demo-tool-cards-run', role: 'toolResult', toolName: 'grep', toolCallId: 'cards-search', text: 'src/manager.ts:323:const agentId = id;\nsrc/types.ts:15:agentId: string', complete: true, timestamp: now - 1200 },
+    { id: 'cards-wait-result', runId: 'demo-tool-cards-run', role: 'toolResult', toolName: 'dsh_wait', toolCallId: 'cards-wait', complete: true, timestamp: now - 1000,
+      text: JSON.stringify({ content: [{ type: 'text', text: 'duplicate' }], structuredContent: { reason: 'message', events: [{ kind: 'message', text: '完成检查' }], agents: [{ agentId: 'task-a', status: 'running' }] } }) },
+    { id: 'cards-build-result', runId: 'demo-tool-cards-run', role: 'toolResult', toolName: 'exec_command', toolCallId: 'cards-build', text: 'src/app.ts:35:9: error TS2322', complete: true, timestamp: now - 900, exitCode: 1, isError: true },
+  ],
+});
 let revision = 0;
 const changes = new Map<string, number>();
 const touch = (id: string) => { revision++; changes.set(id, revision); };
 const windowed = (agent: Agent) => ({ ...agent, messageTotal: agent.messages.length, messages: agent.messages.slice(-50).map(message => ({ ...message })) });
 const feed = new PanelFeed();
 const snapshot = () => ({ cursor: `demo:${revision}`, full: true, agents: sample.map(windowed), pendingCompletions: 1 });
-async function demoCall(name: string, args: any) {
+
+// Demo-only settings store: writes survive view switches for browser acceptance.
+const demoCatalog: Array<DiscoveredModel & { levels: string[] }> = [
+  { provider: 'demo', id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', levels: ['off', 'low', 'high', 'max'] },
+  { provider: 'demo', id: 'deepseek-v4.1', name: 'DeepSeek V4.1', levels: ['low', 'medium', 'high'] },
+  { provider: 'demo', id: 'research-preview', name: 'Research Preview', levels: ['off', 'high'] },
+];
+let demoSettings: Settings = defaultSettings();
+const cloneSettings = (settings: Settings): Settings => ({
+  presets: {
+    slot1: settings.presets.slot1 ? { ...settings.presets.slot1 } : null,
+    slot2: settings.presets.slot2 ? { ...settings.presets.slot2 } : null,
+  },
+  maxConcurrent: settings.maxConcurrent,
+  maxPerThread: settings.maxPerThread,
+});
+// Runtime limits only; a model is resolved per dispatch from an explicit model,
+// the chosen preset, or DSH's native configuration.
+const demoEffective = (): EffectiveSettings => ({
+  maxConcurrent: demoSettings.maxConcurrent,
+  maxPerThread: demoSettings.maxPerThread,
+});
+const demoModels = () => demoCatalog.map(({ levels, ...model }) => ({ ...model,
+  contextWindow: 1_000_000, input: ['text', 'image'], reasoningEfforts: levels }));
+const demoPresets = () => ({
+  slot1: { name: '常规模型', description: 'General tasks: routine implementation, review, search, and bounded changes. Choose this slot explicitly for ordinary work. A null model means this slot inherits the DSH profile\'s native model and thinking level at real spawn time; it is not a third plugin default.',
+    model: demoSettings.presets.slot1, source: demoSettings.presets.slot1 ? 'preset' : 'native-dsh' },
+  slot2: { name: '增强模型', description: 'Complex tasks or deeper reasoning: ambiguous design, hard debugging, high-risk review, or multi-step planning. May use the same model as slot1 with a higher thinking level. A null model means this slot inherits the DSH profile\'s native model and thinking level at real spawn time; it is not a third plugin default.',
+    model: demoSettings.presets.slot2, source: demoSettings.presets.slot2 ? 'preset' : 'native-dsh' },
+});
+const demoLevels = (provider: string, id: string) => demoCatalog.find(model => model.provider === provider && model.id === id)?.levels ?? [];
+const demoWait = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  if (signal?.aborted) return reject(new Error('已取消'));
+  const timer = setTimeout(resolve, ms);
+  signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('已取消')); }, { once: true });
+});
+const demoFailures = demo ? new URLSearchParams(location.search) : new URLSearchParams();
+const demoMigratedModels = new Set<string>();
+async function demoCall(name: string, args: any, signal?: AbortSignal) {
+  if (name === 'dsh_model_migration') {
+    await demoWait(120, signal);
+    if (!args.profile) return { profiles: ['web', 'sdk'] };
+    if (args.selections) {
+      for (const item of args.selections) for (const id of item.models) demoMigratedModels.add(JSON.stringify([item.adapter, item.provider, id]));
+      return { imported: args.selections.reduce((count: number, item: any) => count + item.models.length, 0), backup: 'demo' };
+    }
+    return { profile: args.profile, providers: [{ adapter: 'llm-pi-ai', id: 'demo', models: [
+      { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', configured: true },
+      { id: args.profile === 'web' ? 'web-extra-model' : 'sdk-extra-model', configured: demoMigratedModels.has(JSON.stringify(['llm-pi-ai', 'demo', args.profile === 'web' ? 'web-extra-model' : 'sdk-extra-model'])) },
+    ] }] };
+  }
   if (name === 'dsh_poll') {
     const cursor = typeof args.cursor === 'string' ? args.cursor : '';
     if (cursor === `demo:${revision}`) await new Promise(resolve => setTimeout(resolve, 1000));
@@ -141,6 +214,36 @@ async function demoCall(name: string, args: any) {
   }
   if (name === 'dsh_stop') { const agent = sample.find(item => item.id === args.agentId)!; agent.status = 'stopped'; agent.finishedAt = Date.now(); touch(agent.id); }
   if (name === 'dsh_reply') { const agent = sample.find(item => item.id === args.agentId)!; agent.dialogs = []; agent.status = 'running'; agent.activity = 'thinking'; touch(agent.id); }
-  if (name === 'dsh_models') return { selected: sample[0].model, models: [{ provider: 'demo', id: 'deepseek-v4.1-flash' }], thinkingLevels: ['off', 'low', 'high', 'max'] };
+  if (name === 'dsh_settings') {
+    const update = args?.update;
+    if (update && typeof update === 'object') {
+      if (demoFailures.has('settings-error')) { await demoWait(180, signal); throw new Error('演示：保存设置失败'); }
+      await demoWait(160, signal);
+      const presets = update.presets && typeof update.presets === 'object' ? update.presets : {};
+      // A legacy defaultModel field may still arrive from old demo state; it is ignored.
+      demoSettings = normalizeSettings({
+        presets: {
+          slot1: 'slot1' in presets ? presets.slot1 : demoSettings.presets.slot1,
+          slot2: 'slot2' in presets ? presets.slot2 : demoSettings.presets.slot2,
+        },
+        maxConcurrent: 'maxConcurrent' in update ? update.maxConcurrent : demoSettings.maxConcurrent,
+        maxPerThread: 'maxPerThread' in update ? update.maxPerThread : demoSettings.maxPerThread,
+      }, demoSettings);
+    } else await demoWait(120, signal);
+    return { settings: cloneSettings(demoSettings), effective: demoEffective() };
+  }
+  if (name === 'dsh_models') {
+    const result = { presets: demoPresets(), settings: cloneSettings(demoSettings), effective: demoEffective(), all_models: demoModels() };
+    if (args.model) {
+      if (demoFailures.has('effort-error')) { await demoWait(180, signal); throw new Error('演示：读取思考强度失败'); }
+      await demoWait(220, signal);
+      const provider = String(args.model.provider || ''), id = String(args.model.id || '');
+      if (!demoCatalog.some(model => model.provider === provider && model.id === id)) throw new Error('未找到该演示模型');
+      return { ...result, probe: { model: { provider, id }, thinkingLevels: demoLevels(provider, id) } };
+    }
+    if (demoFailures.has('models-error')) { await demoWait(180, signal); throw new Error('演示：模型列表加载失败'); }
+    await demoWait(160, signal);
+    return result;
+  }
   return snapshot();
 }
